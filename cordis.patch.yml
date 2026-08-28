@@ -1,0 +1,45 @@
+# Patch layer contributed by dsh-plugin-tui.
+#
+# The tui profile runs directly over dsh-base (no dsh-headless bundle), so the
+# few rows headless would have contributed are restated here, followed by this
+# plugin's own startup + runner pair.
+
+- id: system-prompt
+  config:
+    persona: >-
+      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+
+# The shared module-reload HMR row stays off; the launcher's watch-only
+# fallback still keeps the user patch layers live until the run exits.
+- id: hmr
+  disabled: true
+
+- id: tools
+  config:
+    mode: !!js process.env.DSH_TOOLS_MODE
+
+- insert:
+    # Code Mode is a core execution capability, not a Web component.
+    - id: code-runtime
+      name: '@deepseek-ai/dsh-code-runtime-worker-thread'
+
+    # No bundle mounts the ask_user_question tool row (the Web surface wires
+    # it dynamically), so an interactive profile inserts it itself; the REPL
+    # registers the matching ctx.userQuestions provider.
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+
+    - id: tui-startup
+      name: dsh-plugin-tui/startup
+
+    - id: tui-runner
+      name: dsh-plugin-tui
+      inject: [tuiStartup]
+      config:
+        request: !!js ctx.tuiStartup
+
+# --workdir chdirs inside tui-startup's action, before it provides tuiStartup.
+# Forcing sandbox-policy to wait on that service makes it mount AFTER the chdir,
+# so its workspaceRoot (!!js process.cwd()) follows the requested directory.
+- id: sandbox-policy
+  inject: [tuiStartup]
