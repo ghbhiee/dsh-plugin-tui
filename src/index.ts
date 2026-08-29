@@ -300,8 +300,16 @@ async function coldTitle(persistence: unknown, id: string): Promise<string | und
     }).inspect
     if (inspect === undefined) return undefined
     const view = await inspect.call(persistence, id)
+    if (process.env.TUI_DEBUG === '1') {
+      const { appendFileSync } = await import('node:fs')
+      appendFileSync('/tmp/tui-debug.log', `inspect ${id}: keys=${JSON.stringify(Object.keys(view ?? {}))} events=${String((view as { events?: unknown[] })?.events?.length)}\n`)
+    }
     return titleFromEvents(view?.events ?? [])
-  } catch {
+  } catch (error) {
+    if (process.env.TUI_DEBUG === '1') {
+      const { appendFileSync } = await import('node:fs')
+      appendFileSync('/tmp/tui-debug.log', `inspect ${id} THREW: ${error instanceof Error ? error.message : String(error)}\n`)
+    }
     return undefined
   }
 }
@@ -1002,11 +1010,20 @@ async function run(ctx: Context, config: Config, io: Io): Promise<void> {
   })
 
   // The other channel-neutral seam: ask_user_question and plan review both
-  // block on a registered provider (one per context; headless has none).
-  const questionService = ctx.get('userQuestions')
-  if (questionService !== undefined) {
-    questionService.registerProvider({
-      ask: async (request) => {
+  // block on a human answerer. 0.1.1 exposes a single-provider registration;
+  // 0.1.2 replaced it with an answerer waterfall ('user-questions/request',
+  // mirroring approval/request) — support both so one build spans the drift.
+  const answerQuestions = async (request: {
+    questions: readonly {
+      id: string
+      question: string
+      detail?: string
+      header?: string
+      options?: readonly { label: string; description?: string }[]
+      multiSelect?: boolean
+    }[]
+    signal?: AbortSignal
+  }): Promise<{ answers: AskUserQuestionAnswerItem[] }> => {
         render.stopSpinner()
         const answers: AskUserQuestionAnswerItem[] = []
         for (const item of request.questions) {
@@ -1039,7 +1056,18 @@ async function run(ctx: Context, config: Config, io: Io): Promise<void> {
         }
         if (running) render.startSpinner()
         return { answers }
-      },
+  }
+  const questionService = ctx.get('userQuestions') as
+    | { registerProvider?: (provider: { ask: typeof answerQuestions }) => unknown }
+    | undefined
+  if (questionService !== undefined && typeof questionService.registerProvider === 'function') {
+    questionService.registerProvider({ ask: answerQuestions })
+  } else {
+    ;(ctx as unknown as {
+      on: (event: string, handler: (request: Parameters<typeof answerQuestions>[0] & { agent?: unknown }, next: () => unknown) => unknown) => void
+    }).on('user-questions/request', (request, next) => {
+      if (request.agent !== undefined && request.agent !== agent) return next()
+      return answerQuestions(request)
     })
   }
 
